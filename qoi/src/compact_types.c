@@ -1,18 +1,122 @@
 #include "compact_types.h"
-#include <CL/cl.h>
+#include "kernel_loader.h"
+#include <stdio.h>
+#include <stdlib.h>
 
-struct platform_t {
-	cl_platform_id platform_id;
-	cl_uint n_devices;
-	cl_device_id *devices;
-};
+void get_platform(ocl_res_t *ocl){
+    ocl->err = clGetPlatformIDs(1, &ocl->platform_id, &ocl->n_platforms);
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Error calling clGetPlatformIDs. Error code: %d :: %s\n", ocl->err, get_error_msg(ocl->err));
+        exit(1);
+    }
+}
 
-struct instance_t {
-	cl_context context;
-	cl_uint n_platforms;
-	platform_t *platforms;
-	cl_program program;
-};
+void get_device(ocl_res_t *ocl){
+    ocl->err = clGetDeviceIDs(
+        ocl->platform_id,
+        CL_DEVICE_TYPE_GPU,
+        1,
+        &ocl->device_id,
+        &ocl->n_devices
+    );
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Error calling clGetDeviceIDs. Error code: %d :: %s\n", ocl->err, get_error_msg(ocl->err));
+        exit(1);
+    }
+}
+
+void create_context(ocl_res_t *ocl){
+	ocl->context = clCreateContext(NULL, ocl->n_devices, &ocl->device_id, NULL, NULL, &ocl->err);
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Error creating context. Error code: %d :: %s\n", ocl->err, get_error_msg(ocl->err));
+        exit(1);
+    }
+}
+
+void load_kernel_code(ocl_res_t *ocl, const char* path){
+	int error_code;
+	ocl->kernel_code = load_kernel_source(path, &error_code);
+    if (error_code != 0) {
+        printf("[ERROR] Source code loading error!\n");
+        exit(1);
+    }
+}
+
+void create_program(ocl_res_t *ocl){
+	ocl->program = clCreateProgramWithSource(ocl->context, 1, &ocl->kernel_code, NULL, &ocl->err);
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Error creating program. Error code: %d\n :: %s", ocl->err, get_error_msg(ocl->err));
+        exit(1);
+    }
+}
+
+void build_program(ocl_res_t *ocl, const char *options){
+    ocl->err = clBuildProgram(
+        ocl->program,
+        1,
+        &ocl->device_id,
+        options,
+        NULL,
+        NULL
+    );
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Build error! Code: %d :: %s\n", ocl->err, get_error_msg(ocl->err));
+        size_t real_size;
+
+        ocl->err = clGetProgramBuildInfo(
+            ocl->program,
+            ocl->device_id,
+            CL_PROGRAM_BUILD_LOG,
+            0,
+            NULL,
+            &real_size
+        );
+
+        char* build_log = (char*)malloc(sizeof(char) * (real_size + 1));
+        ocl->err = clGetProgramBuildInfo(
+            ocl->program,
+            ocl->device_id,
+            CL_PROGRAM_BUILD_LOG,
+            real_size + 1,
+            build_log,
+            &real_size
+        );
+
+        build_log[real_size] = 0;  // Ensure null termination
+        printf("Real size : %zu\n", real_size);
+        printf("Build log : %s\n", build_log);
+        free(build_log);
+        exit(1);
+    }
+
+    size_t sizes_param[10];
+    size_t real_size;
+    ocl->err = clGetProgramInfo(
+        ocl->program,
+        CL_PROGRAM_BINARY_SIZES,
+        sizeof(sizes_param),
+        sizes_param,
+        &real_size
+    );
+    printf("Program info: \n");
+    printf("Real size   : %zu\n", real_size);
+    printf("Binary size : %zu\n", sizes_param[0]);
+}
+
+
+void create_kernel(ocl_res_t *ocl, const char *kernel_name){
+	ocl->kernel = clCreateKernel(ocl->program, kernel_name, &ocl->err);
+    if (ocl->err != CL_SUCCESS) {
+        printf("[ERROR] Error creating kernel. Error code: %d :: %s\n", ocl->err, get_error_msg(ocl->err));
+        exit(1);
+    }
+}
+
+void init_opencl(ocl_res_t *ocl){
+	get_platform(ocl);
+	get_device(ocl);
+	create_context(ocl);
+}
 
 const char *get_error_msg(cl_int error) {
 	switch(error){
@@ -88,14 +192,4 @@ const char *get_error_msg(cl_int error) {
 	    case -1005: return "CL_D3D10_RESOURCE_NOT_ACQUIRED_KHR";
 	    default: return "Unknown OpenCL error";
     }
-}
-
-void get_platforms(struct instance_t *ins, int n_entries){
-	cl_platform_id *platforms;
-	cl_uint n_platforms;
-	cl_int err = clGetPlatformIDs(n_entries, platforms, &n_platforms);
-	if (err != CL_SUCCESS) {
-		printf("[ERROR] Error calling clGetPlatformIDs. Error code: %d\n", err);
-		return 0;
-	}
 }

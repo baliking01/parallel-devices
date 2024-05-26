@@ -1,174 +1,82 @@
-#include <stdio.h>
-#include <stdlib.h>
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_LINEAR
+#include "stb_image.h"
 
-#define CL_TARGET_OPENCL_VERSION 220
-#include <CL/cl.h>
-#include "kernel_loader.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
-const int SAMPLE_SIZE = 1000;
+#define QOI_IMPLEMENTATION
+#include "qoi.h"
+
+#include "parallel_qoi.h"
+
+#define STR_ENDS_WITH(S, E) (strcmp(S + strlen(S) - (sizeof(E)-1), E) == 0)
 
 int main(int argc, char **argv){
-    cl_int err;
-    int error_code;
-
-
-    // Get platform
-    cl_uint n_platforms;
-	cl_platform_id platform_id;
-    err = clGetPlatformIDs(1, &platform_id, &n_platforms);
-	if (err != CL_SUCCESS) {
-		printf("[ERROR] Error calling clGetPlatformIDs. Error code: %d\n", err);
-		return 0;
-	}
-
-    // Get device
-	cl_device_id device_id;
-	cl_uint n_devices;
-	err = clGetDeviceIDs(
-		platform_id,
-		CL_DEVICE_TYPE_GPU,
-		1,
-		&device_id,
-		&n_devices
-	);
-	if (err != CL_SUCCESS) {
-		printf("[ERROR] Error calling clGetDeviceIDs. Error code: %d\n", err);
-		return 0;
-	}
-
-    // Create OpenCL context
-    cl_context context = clCreateContext(NULL, n_devices, &device_id, NULL, NULL, NULL);
-
-
-    // Build the program
-    const char* kernel_code = load_kernel_source("kernels/sample.cl", &error_code);
-    if (error_code != 0) {
-        printf("Source code loading error!\n");
-        return 0;
-    }
-    cl_program program = clCreateProgramWithSource(context, 1, &kernel_code, NULL, NULL);
-    const char options[] = "-D SET_ME=1234";
-    err = clBuildProgram(
-        program,
-        1,
-        &device_id,
-        options,
-        NULL,
-        NULL
-    );
-    if (err != CL_SUCCESS) {
-        printf("Build error! Code: %d\n", err);
-        size_t real_size;
-        err = clGetProgramBuildInfo(
-            program,
-            device_id,
-            CL_PROGRAM_BUILD_LOG,
-            0,
-            NULL,
-            &real_size
-        );
-        char* build_log = (char*)malloc(sizeof(char) * (real_size + 1));
-        err = clGetProgramBuildInfo(
-            program,
-            device_id,
-            CL_PROGRAM_BUILD_LOG,
-            real_size + 1,
-            build_log,
-            &real_size
-        );
-        // build_log[real_size] = 0;
-        printf("Real size : %d\n", real_size);
-        printf("Build log : %s\n", build_log);
-        free(build_log);
-        return 0;
+    if (argc < 3) {
+        puts("Usage: pqoi <infile> <outfile>");
+        puts("Examples:");
+        puts("  pqoi input.png output.qoi");
+        puts("  pqoi input.qoi output.png");
+        exit(1);
     }
 
-    size_t sizes_param[10];
-    size_t real_size;
-    err = clGetProgramInfo(
-        program,
-        CL_PROGRAM_BINARY_SIZES,
-        10,
-        sizes_param,
-        &real_size
-    );
-    printf("Real size   : %d\n", real_size);
-    printf("Binary size : %d\n", sizes_param[0]);
+    void *pixels = NULL;
+    int w, h, channels;
+    if (STR_ENDS_WITH(argv[1], ".png")) {
+        if(!stbi_info(argv[1], &w, &h, &channels)) {
+            printf("Couldn't read header %s\n", argv[1]);
+            exit(1);
+        }
 
+        // Force all odd encodings to be RGBA
+        if(channels != 3) {
+            channels = 4;
+        }
 
-    cl_kernel kernel = clCreateKernel(program, "sample_kernel", NULL);
-
-    // Create the host buffer and initialize it
-    int* host_buffer = (int*)malloc(SAMPLE_SIZE * sizeof(int));
-    for (int i = 0; i < SAMPLE_SIZE; ++i) {
-        host_buffer[i] = i;
+        pixels = (void *)stbi_load(argv[1], &w, &h, NULL, channels);
+    }
+    else if (STR_ENDS_WITH(argv[1], ".qoi")) {
+        qoi_desc desc;
+        pixels = qoi_read(argv[1], &desc, 0);
+        channels = desc.channels;
+        w = desc.width;
+        h = desc.height;
     }
 
-    // Create the device buffer
-    cl_mem device_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, SAMPLE_SIZE * sizeof(int), NULL, NULL);
-
-    // Set kernel arguments
-    clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&device_buffer);
-    clSetKernelArg(kernel, 1, sizeof(int), (void*)&SAMPLE_SIZE);
-
-    // Create the command queue
-    cl_command_queue command_queue = clCreateCommandQueue(context, device_id, NULL, NULL);
-
-    // Host buffer -> Device buffer
-    clEnqueueWriteBuffer(
-        command_queue,
-        device_buffer,
-        CL_FALSE,
-        0,
-        SAMPLE_SIZE * sizeof(int),
-        host_buffer,
-        0,
-        NULL,
-        NULL
-    );
-
-    // Size specification
-    size_t local_work_size = 256;
-    size_t n_work_groups = (SAMPLE_SIZE + local_work_size + 1) / local_work_size;
-    size_t global_work_size = n_work_groups * local_work_size;
-
-    // Apply the kernel on the range
-    clEnqueueNDRangeKernel(
-        command_queue,
-        kernel,
-        1,
-        NULL,
-        &global_work_size,
-        &local_work_size,
-        0,
-        NULL,
-        NULL
-    );
-
-    // Host buffer <- Device buffer
-    clEnqueueReadBuffer(
-        command_queue,
-        device_buffer,
-        CL_TRUE,
-        0,
-        SAMPLE_SIZE * sizeof(int),
-        host_buffer,
-        0,
-        NULL,
-        NULL
-    );
-
-    for (int i = 0; i < SAMPLE_SIZE; ++i) {
-        printf("[%d] = %d, ", i, host_buffer[i]);
+    if (pixels == NULL) {
+        printf("Couldn't load/decode %s\n", argv[1]);
+        exit(1);
     }
 
-    // Release the resources
-    clReleaseKernel(kernel);
-    clReleaseProgram(program);
-    clReleaseContext(context);
-    clReleaseDevice(device_id);
+    int encoded = 0;
+    if (STR_ENDS_WITH(argv[2], ".png")) {
+        encoded = stbi_write_png(argv[2], w, h, channels, pixels, 0);
+    }
+    else if (STR_ENDS_WITH(argv[2], ".qoi")) {
+        /*
+        encoded = qoi_write(argv[2], pixels, &(qoi_desc){
+            .width = w,
+            .height = h, 
+            .channels = channels,
+            .colorspace = QOI_SRGB
+        });
+        */
 
-    free(host_buffer);
+        encoded = parallel_qoi_write('w', argv[2], pixels, &(qoi_desc){
+            .width = w,
+            .height = h, 
+            .channels = channels,
+            .colorspace = QOI_SRGB
+        });
+    }
 
-	return 0;
+    if (!encoded) {
+        printf("Couldn't write/encode %s\n", argv[2]);
+        exit(1);
+    }
+
+    free(pixels);
+    return 0;
 }
