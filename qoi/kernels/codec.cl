@@ -5,65 +5,108 @@
 #define QOI_OP_RGB    0xfe /* 11111110 */
 #define QOI_OP_RGBA   0xff /* 11111111 */
 
+#define QOI_COLOR_HASH(C) (C.rgba.r*3 + C.rgba.g*5 + C.rgba.b*7 + C.rgba.a*11)
+
+typedef union {
+	struct { unsigned char r, g, b, a; } rgba;
+	unsigned int v;
+} qoi_rgba_t;
+
 __kernel void encode(__global unsigned char *pixels, __global unsigned char *bytes, __global unsigned int *chunk_lens, int width, int channels)
 {
-	/*
-	// grayscale test
-	int id = get_global_id(0) * width * channels; // RGBA offset 4
-    
-	for (int i = 0; i < width*4; i+=4){
-		bytes[id + i + 0] = 255 - pixels[id + i + 0];
-        bytes[id + i + 1] = 255 - pixels[id + i + 1];
-        bytes[id + i + 2] = 255 - pixels[id + i + 2];
-        
-        if (channel == 4) bytes[id + i + 3] = 255 - pixels[id + i + 3];
-	}
-	*/
-	
 	// encode pixels
 	int id = get_global_id(0) * width * channels;
 	// byte index, account for tags
 	unsigned int p = get_global_id(0) * width * (channels + 1);
 	unsigned int start = p;
 
-	unsigned char index[64*4] = {0}; // qoi_rgba_t
-	unsigned char px_r, px_g, px_b, px_a, px_prev_r, px_prev_g, px_prev_b, px_prev_a;
+	qoi_rgba_t index[64] = {0};
+	qoi_rgba_t px, px_prev;
 
 	int run = 0;
-	px_r = px_prev_r = 0;
-	px_g = px_prev_g = 0;
-	px_b = px_prev_b = 0;
-	px_a = px_prev_a = 255;
+	px_prev.rgba.r = 0;
+	px_prev.rgba.g = 0;
+	px_prev.rgba.b = 0;
+	px_prev.rgba.a = 255;
+	px = px_prev;
 	
 	
 	for (int px_pos = 0; px_pos < width * channels; px_pos += channels){
-		px_r = pixels[id + px_pos + 0];
-		px_g = pixels[id + px_pos + 1];
-		px_b = pixels[id + px_pos + 2];
+		px.rgba.r = pixels[id + px_pos + 0];
+		px.rgba.g = pixels[id + px_pos + 1];
+		px.rgba.b = pixels[id + px_pos + 2];
 
 		if (channels == 4) {
-			px_a = pixels[id + px_pos + 3];
+			px.rgba.a = pixels[id + px_pos + 3];
 		}
 
-		if (px_a == px_prev_a){
-			bytes[p++] = QOI_OP_RGB;
-			bytes[p++] = px_r;
-			bytes[p++] = px_g;
-			bytes[p++] = px_b;
+
+		if (px.v == px_prev.v) {
+			run++;
+			if (run == 62 || px_pos == (width * channels) - channels) {
+				bytes[p++] = QOI_OP_RUN | (run - 1);
+				run = 0;
+			}
 		}
 		else {
-			bytes[p++] = QOI_OP_RGBA;
-			bytes[p++] = px_r;
-			bytes[p++] = px_g;
-			bytes[p++] = px_b;
-			bytes[p++] = px_a;
+			int index_pos;
+
+			if (run > 0) {
+				bytes[p++] = QOI_OP_RUN | (run - 1);
+				run = 0;
+			}
+
+			index_pos = QOI_COLOR_HASH(px) % 64;
+
+			if (index[index_pos].v == px.v) {
+				bytes[p++] = QOI_OP_INDEX | index_pos;
+			}
+			else {
+				index[index_pos] = px;
+
+				if (px.rgba.a == px_prev.rgba.a){
+					signed char vr = px.rgba.r - px_prev.rgba.r;
+					signed char vg = px.rgba.g - px_prev.rgba.g;
+					signed char vb = px.rgba.b - px_prev.rgba.b;
+
+					signed char vg_r = vr - vg;
+					signed char vg_b = vb - vg;
+
+					if (
+						vr > -3 && vr < 2 &&
+						vg > -3 && vg < 2 &&
+						vb > -3 && vb < 2
+					) {
+						bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 | (vg + 2) << 2 | (vb + 2);
+					}
+					else if (
+						vg_r >  -9 && vg_r <  8 &&
+						vg   > -33 && vg   < 32 &&
+						vg_b >  -9 && vg_b <  8
+					) {
+						bytes[p++] = QOI_OP_LUMA     | (vg   + 32);
+						bytes[p++] = (vg_r + 8) << 4 | (vg_b +  8);
+					}
+					else {
+						bytes[p++] = QOI_OP_RGB;
+						bytes[p++] = px.rgba.r;
+						bytes[p++] = px.rgba.g;
+						bytes[p++] = px.rgba.b;
+					}
+				}
+				else {
+					bytes[p++] = QOI_OP_RGBA;
+					bytes[p++] = px.rgba.r;
+					bytes[p++] = px.rgba.g;
+					bytes[p++] = px.rgba.b;
+					bytes[p++] = px.rgba.a;
+				}
+			}
 		}
 
-		px_prev_r = px_r;
-		px_prev_g = px_g;
-		px_prev_b = px_b;
-		px_prev_a = px_a;
+		px_prev = px;
 	}
+	
 	chunk_lens[get_global_id(0)] = p - start;
 }
 

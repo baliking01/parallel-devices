@@ -1,7 +1,8 @@
 #ifndef PARALLEL_QOI
 #define PARALLEL_QOI
 
-int parallel_qoi_write(const char operation, const char *filename, const void *data, const qoi_desc *desc);
+void *parallel_qoi_encode(const void *data, const qoi_desc *desc, int *out_len);
+int parallel_qoi_write(const char *filename, const void *data, const qoi_desc *desc);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,7 @@ int parallel_qoi_write(const char operation, const char *filename, const void *d
 
 // encode target image using opencl parallel computing
 // returns the size of the data written or 0 on failure
- int parallel_qoi_write(const char operation, const char *filename, const void *data, const qoi_desc *desc){
+ void *parallel_qoi_encode(const void *data, const qoi_desc *desc, int *out_len){
     // prepare opencl
     ocl_res_t ocl;
     init_opencl(&ocl);
@@ -39,15 +40,9 @@ int parallel_qoi_write(const char operation, const char *filename, const void *d
 
     const unsigned char *pixels = (const unsigned char *)data;
     int px_len = desc->width * desc->height * desc->channels;
-	int px_end = px_len - desc->channels;
-	int channels = desc->channels;
 
+    // length of each compressed segment
 	unsigned int chunk_lengths[desc->height];
-    printf("px_len: %d\n", px_len);
-	printf("width: %d\n", desc->width);
-	printf("height: %d\n", desc->height);
-	printf("channels: %d\n", channels);
-	printf("max_size: %d\n", max_size);
     
 	cl_mem pixel_buffer = clCreateBuffer(ocl.context, CL_MEM_READ_ONLY, px_len * sizeof(unsigned char), NULL, NULL);
     cl_mem bytes_buffer = clCreateBuffer(ocl.context, CL_MEM_READ_WRITE, max_size * sizeof(unsigned char), NULL, NULL);
@@ -113,65 +108,6 @@ int parallel_qoi_write(const char operation, const char *filename, const void *d
         NULL,
         NULL
     );
-    
-    // TODO: - add header info
-    // 		 - merge compressed segments
-    //		 - remove artifacts and redundant chunks
-
-    for (int i = 0; i < 200; i++){
-    	printf("%d ", pixels[i]);
-    }
-
-    printf("\nConverted:\n");
-    for (int i = 0; i < 200; i++){
-        printf("%d ", bytes[i]);
-    }
-
-    printf("New\n");
-    int offset;
-    for (int i = 0; i < desc->height; i++){
-        printf("Line: %d\n", i);
-        offset = i * desc->width * (channels + 1);
-        for (int j = 0; j < chunk_lengths[i];){
-            switch (bytes[offset + j]){
-                case QOI_OP_INDEX:
-
-                case QOI_OP_DIFF:
-
-                case QOI_OP_LUMA:
-
-                case QOI_OP_RUN:
-
-                case QOI_OP_RGB:
-                    printf("R:%d G:%d B:%d\n", bytes[offset + j + 1], bytes[offset + j + 2], bytes[offset + j + 3]);
-                    j += 4;
-                    break;
-                case QOI_OP_RGBA:
-                    printf("R:%d G:%d B:%d A:%d\n", bytes[offset + j + 1], bytes[offset + j + 2], bytes[offset + j + 3], bytes[offset + j + 4]);
-                    j += 5;
-                    break;
-                default:
-                    break;
-            }/*
-            if (bytes[offset + j] == QOI_OP_RGB){
-               printf("R:%d G:%d B:%d\n", bytes[offset + j + 1], bytes[offset + j + 2], bytes[offset + j + 3]);
-               j += 4;
-            }
-            else if (bytes[offset + j] == QOI_OP_RGBA){
-                printf("R:%d G:%d B:%d A:%d\n", bytes[offset + j + 1], bytes[offset + j + 2], bytes[offset + j + 3], bytes[offset + j + 4]);
-                 j += 5;
-            }*/
-        }
-
-    }
-
-    printf("\n");
-    for (int i = 0; i < desc->height; i++){
-        printf("%d ", chunk_lengths[i]);
-    }
-
-    //int r = stbi_write_png("gray.png", desc->width, desc->height, channels, (void*)bytes, 0);
-
 
     // Release the resources
     clReleaseKernel(ocl.kernel);
@@ -179,14 +115,68 @@ int parallel_qoi_write(const char operation, const char *filename, const void *d
     clReleaseContext(ocl.context);
     clReleaseDevice(ocl.device_id);
 
-    //free(host_buffer);
-    free(pixel_buffer);
-    free(bytes_buffer);
+    clReleaseMemObject(pixel_buffer);
+    clReleaseMemObject(bytes_buffer);
+    clReleaseMemObject(chunk_lens_buffer);
+    
 
-    printf("Success\n");
-    exit(0);
+    // TODO: - add header info
+    // 		 - merge compressed segments
+    //		 - remove artifacts and redundant chunks
 
-    return 0;
+    int merged_size = 0;
+    for (int i = 0; i < desc->height; i++){
+        merged_size += chunk_lengths[i];
+    }
+    merged_size += QOI_HEADER_SIZE + sizeof(qoi_padding);
+    unsigned char *merged = (unsigned char*)calloc(merged_size, sizeof(unsigned char));
+
+    int p = 0;
+
+    // add header
+    qoi_write_32(merged, &p, QOI_MAGIC);
+    qoi_write_32(merged, &p, desc->width);
+    qoi_write_32(merged, &p, desc->height);
+    merged[p++] = desc->channels;
+    merged[p++] = desc->colorspace;
+
+    // merge segments
+    int k;
+    for (int i = 0; i < desc->height; i++){
+        k = i * desc->width * (desc->channels + 1);
+        memcpy(&merged[p], &bytes[k], chunk_lengths[i]);
+        p += chunk_lengths[i];
+    }
+
+    // don't need segments anymore
+    free(bytes);
+    *out_len = merged_size;
+        
+    return merged;
+}
+
+int parallel_qoi_write(const char *filename, const void *data, const qoi_desc *desc){
+    FILE *f = fopen(filename, "wb");
+    int size, err;
+    void *encoded;
+
+    if (!f) {
+        return 0;
+    }
+
+    encoded = parallel_qoi_encode(data, desc, &size);
+    if (!encoded) {
+        fclose(f);
+        return 0;
+    }
+
+    fwrite(encoded, 1, size, f);
+    fflush(f);
+    err = ferror(f);
+    fclose(f);
+
+    QOI_FREE(encoded);
+    return err ? 0 : size;
 }
 
 #endif

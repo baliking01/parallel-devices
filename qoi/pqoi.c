@@ -14,11 +14,12 @@
 #define STR_ENDS_WITH(S, E) (strcmp(S + strlen(S) - (sizeof(E)-1), E) == 0)
 
 int main(int argc, char **argv){
-    if (argc < 3) {
-        puts("Usage: pqoi <infile> <outfile>");
+    if (argc < 4) {
+        puts("Usage: pconv <infile> <outfile>");
         puts("Examples:");
-        puts("  pqoi input.png output.qoi");
-        puts("  pqoi input.qoi output.png");
+        puts("  pconv input.png output.qoi s");
+        puts("  pconv input.qoi output.png s");
+        puts("  pconv input.qoi output.png p");
         exit(1);
     }
 
@@ -55,21 +56,27 @@ int main(int argc, char **argv){
         encoded = stbi_write_png(argv[2], w, h, channels, pixels, 0);
     }
     else if (STR_ENDS_WITH(argv[2], ".qoi")) {
-        /*
-        encoded = qoi_write(argv[2], pixels, &(qoi_desc){
-            .width = w,
-            .height = h, 
-            .channels = channels,
-            .colorspace = QOI_SRGB
-        });
-        */
 
-        encoded = parallel_qoi_write('w', argv[2], pixels, &(qoi_desc){
-            .width = w,
-            .height = h, 
-            .channels = channels,
-            .colorspace = QOI_SRGB
-        });
+        if (*argv[3] == 's'){
+            encoded = qoi_write(argv[2], pixels, &(qoi_desc){
+                .width = w,
+                .height = h, 
+                .channels = channels,
+                .colorspace = QOI_SRGB
+            });
+        }
+        else if (*argv[3] == 'p'){
+            encoded = parallel_qoi_write(argv[2], pixels, &(qoi_desc){
+                .width = w,
+                .height = h, 
+                .channels = channels,
+                .colorspace = QOI_SRGB
+            });
+        }
+        else{
+            printf("Invalid argument '%c'! Use 's' for sequential or 'p' for parallel encoding of the image!\n", argv[3]);
+            exit(1);
+        }
     }
 
     if (!encoded) {

@@ -98,9 +98,9 @@ void build_program(ocl_res_t *ocl, const char *options){
         sizes_param,
         &real_size
     );
-    printf("Program info: \n");
-    printf("Real size   : %zu\n", real_size);
-    printf("Binary size : %zu\n", sizes_param[0]);
+    //printf("Program info: \n");
+    //printf("Real size   : %zu\n", real_size);
+    //printf("Binary size : %zu\n", sizes_param[0]);
 }
 
 
