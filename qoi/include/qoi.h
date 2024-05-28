@@ -301,6 +301,7 @@ Implementation */
 #ifdef QOI_IMPLEMENTATION
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef QOI_MALLOC
 	#define QOI_MALLOC(sz) malloc(sz)
@@ -354,8 +355,6 @@ static unsigned int qoi_read_32(const unsigned char *bytes, int *p) {
 }
 
 void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
-	FILE *fp = fopen("info.txt", "w");
-
 	int i, max_size, p, run;
 	int px_len, px_end, px_pos, channels;
 	unsigned char *bytes;
@@ -418,7 +417,6 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 			run++;
 			if (run == 62 || px_pos == px_end) {
 				bytes[p++] = QOI_OP_RUN | (run - 1);
-				fprintf(fp, "RUN(%d) -- ", run);
 				run = 0;
 			}
 		}
@@ -427,7 +425,6 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 
 			if (run > 0) {
 				bytes[p++] = QOI_OP_RUN | (run - 1);
-				fprintf(fp, "RUN(%d) -- ", run);
 				run = 0;
 			}
 
@@ -435,8 +432,6 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 
 			if (index[index_pos].v == px.v) {
 				bytes[p++] = QOI_OP_INDEX | index_pos;
-
-				fprintf(fp, "INDEX(%d) -- ", index_pos);
 			}
 			else {
 				index[index_pos] = px;
@@ -455,8 +450,6 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 						vb > -3 && vb < 2
 					) {
 						bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 | (vg + 2) << 2 | (vb + 2);
-
-						fprintf(fp, "DIFF(%d) -- ", index_pos);
 					}
 					else if (
 						vg_r >  -9 && vg_r <  8 &&
@@ -465,16 +458,12 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 					) {
 						bytes[p++] = QOI_OP_LUMA     | (vg   + 32);
 						bytes[p++] = (vg_r + 8) << 4 | (vg_b +  8);
-
-						fprintf(fp, "LUMA(%d) -- ", index_pos);
 					}
 					else {
 						bytes[p++] = QOI_OP_RGB;
 						bytes[p++] = px.rgba.r;
 						bytes[p++] = px.rgba.g;
 						bytes[p++] = px.rgba.b;
-
-						fprintf(fp, "RGB(%d) -- ", index_pos);
 					}
 				}
 				else {
@@ -483,14 +472,11 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 					bytes[p++] = px.rgba.g;
 					bytes[p++] = px.rgba.b;
 					bytes[p++] = px.rgba.a;
-
-					fprintf(fp, "RGBA(%d) -- ", index_pos);
 				}
 			}
 		}
 		px_prev = px;
 
-		if (px_pos/channels != 0 && (px_pos/channels) % desc->width == 0) fprintf(fp, "END\n");
 	}
 
 	for (i = 0; i < (int)sizeof(qoi_padding); i++) {
@@ -498,8 +484,6 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 	}
 
 	*out_len = p;
-
-	fclose(fp);
 
 	return bytes;
 }
@@ -611,6 +595,7 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
 #ifndef QOI_NO_STDIO
 #include <stdio.h>
 
+
 int qoi_write(const char *filename, const void *data, const qoi_desc *desc) {
 	FILE *f = fopen(filename, "wb");
 	int size, err;
@@ -620,7 +605,16 @@ int qoi_write(const char *filename, const void *data, const qoi_desc *desc) {
 		return 0;
 	}
 
-	encoded = qoi_encode(data, desc, &size);
+
+	//measure encoding time
+	clock_t begin = clock();
+    encoded = qoi_encode(data, desc, &size);
+    clock_t end = clock();
+
+	double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
+    printf("Sequential QOI encoder time: %lfs\n", time_spent);
+    //continue
+
 	if (!encoded) {
 		fclose(f);
 		return 0;
